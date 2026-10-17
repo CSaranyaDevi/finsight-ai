@@ -1,0 +1,28 @@
+# Core
+python-dotenv
+pandas
+tqdm
+
+# Parsing
+python-docx
+pymupdf
+pdfplumber
+
+# RAG
+langchain
+langchain-openai
+langchain-community
+langgraph
+openai
+tiktoken
+chromadb
+bm25s
+numpy
+
+# UI
+streamlit
+
+# Notebooks
+jupyter
+ipykernel
+nbformat
