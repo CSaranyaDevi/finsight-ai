@@ -61,7 +61,7 @@ Plain text splitters destroy financial tables: row labels get separated from col
 ### Deployment split: build locally, serve on Replit
 
 - **Local (VS Code):** run ingestion, chunking, embedding and indexing. Output is a prebuilt artifact: `chroma_db/` plus the saved `bm25s` index directory and a chunk metadata file. Pin the `bm25s` version in `requirements.txt` so the saved index loads identically on Replit.
-- **Embeddings are part of the repo.** Committed artifacts: `index/chroma_db/`, the `bm25s` index, `index/embeddings_cache/` (raw vectors keyed by chunk-content hash, so rebuilding or re-chunking never re-pays for unchanged chunks) and `index_manifest.json`. Expected size is tens of MB (about 1536 floats per chunk, for both chunking strategies). Cloning the repo gives a working retrieval system without an API call or the source filings.
+- **Embeddings are part of the repo.** Committed artifacts: `index/chunks/*.jsonl`, `index/chroma_db/` (holds the chunk vectors), the `bm25s` index and `index_manifest.json`. The LangChain embedding cache (`index/embeddings_cache/`, `LocalFileStore`, one file per text) stays local and is git-ignored; it only saves API cost on re-runs. Expected size is tens of MB (about 1536 floats per chunk, for both chunking strategies). Cloning the repo gives a working retrieval system without an API call or the source filings.
 - **Replit:** ships only the app code and the prebuilt index, and opens Chroma read-only. It does **not** include `DataSource/` or the ingest code path, and never re-embeds the corpus.
 - At query time Replit only embeds the user's query, runs retrieval and rerank, and calls the generator, all through the provider API, so no local models are needed and memory stays low.
 - The index must be built with the same embedding model that Replit uses for queries. Record model name and dimension in an `index_manifest.json` and have the app check it on startup.
@@ -125,3 +125,19 @@ docs/       this file, comparison report
 1. Rerank backend for Replit: LLM-based (light on memory, adds latency and cost) vs local cross-encoder (heavier install). Default to LLM-based.
 2. Streamlit acceptable for the UI, or is a custom web front-end wanted?
 3. Is `DataSource/` allowed in the GitHub repo (≈10 MB), or should it be git-ignored with a download note? (Replit doesn't need it either way; only the built index.)
+
+## 10. LangChain / LangGraph usage (decision: use the framework wherever it has the capability)
+
+| Piece | Implementation |
+|---|---|
+| Parsing, cleaning, section tracking, table cleanup | Own code (`pdfplumber`, `python-docx`); LangChain has no equivalent for borderless financial tables |
+| Fixed-size chunks | `RecursiveCharacterTextSplitter.from_tiktoken_encoder` (512 / 64) |
+| Semantic chunks | `SemanticChunker` (`langchain_experimental`) with `OpenAIEmbeddings`; min/max token limits added on top |
+| Tables | Table chunks built from our parsed tables; retrieval via the `MultiVectorRetriever` pattern (description embedded, full markdown table returned) |
+| Embeddings / vector store | `OpenAIEmbeddings`, `Chroma` |
+| Sparse + fusion | BM25 retriever (`bm25s`) + `EnsembleRetriever` (RRF); custom retriever wrapper if `bm25s` is not supported directly |
+| Rerank | `ContextualCompressionRetriever` with an LLM reranker (`LLMListwiseRerank`) |
+| Agent | LangGraph state machine (§2) |
+| Tracing / evals | LangSmith (optional) |
+
+Chunks are `langchain_core.documents.Document` objects with metadata, converted to/from the `Chunk` record for JSONL storage.

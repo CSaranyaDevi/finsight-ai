@@ -6,3 +6,6 @@ venv/
 .ipynb_checkpoints/
 .DS_Store
 .vscode/
+
+# Local embedding cache (LangChain LocalFileStore, one file per text) - not committed
+index/embeddings_cache/
