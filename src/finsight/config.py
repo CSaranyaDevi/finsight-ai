@@ -9,8 +9,14 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT / ".env")
 
-DATA_DIR = Path(os.getenv("DATA_DIR", ROOT / "DataSource"))
-INDEX_DIR = Path(os.getenv("INDEX_DIR", ROOT / "index"))
+def _path(env_name: str, default: str) -> Path:
+    """Relative paths in .env are resolved against the project root, not the working directory."""
+    p = Path(os.getenv(env_name) or default)
+    return p if p.is_absolute() else (ROOT / p).resolve()
+
+
+DATA_DIR = _path("DATA_DIR", "DataSource")
+INDEX_DIR = _path("INDEX_DIR", "index")
 
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1536"))

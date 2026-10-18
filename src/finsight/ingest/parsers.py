@@ -40,9 +40,93 @@ def _dedupe_row(cells: list[str]) -> list[str]:
     return out
 
 
+_NUM = r"\(?-?\$?\s?\d[\d,]*(?:\.\d+)?\)?%?"
+_NUMERIC_CELL = re.compile(rf"^{_NUM}$|^[—–-]$")
+# Trailing run of numbers/symbols at the end of a row label: "AWS 90,757 107,556", "North America 12 % 10 %"
+_TAIL = re.compile(rf"^(?P<label>.*?[^\d\s$(%,.\-—–])?\s*(?P<tail>(?:(?:{_NUM}|[—–-]|\$|%)\s*)+)$")
+
+
+def _split_numeric_row(text: str) -> list[str]:
+    """Split a one-cell row like 'AWS 90,757 107,556' into ['AWS', '90,757', '107,556']."""
+    m = _TAIL.match(text.strip())
+    if not m or not any(ch.isdigit() for ch in m.group("tail")):
+        return [text.strip()]
+    tokens = m.group("tail").split()
+    values: list[str] = []
+    for tok in tokens:
+        if tok in {"%", ")"} and values:
+            values[-1] += tok
+        elif values and values[-1] == "$":
+            values[-1] = "$" + tok
+        else:
+            values.append(tok)
+    return [(m.group("label") or "").strip(), *values]
+
+
+def _merge_symbol_cells(row: list[str]) -> list[str]:
+    """Join stray '$' / '%' / ')' cells onto the neighbouring value cell."""
+    out = list(row)
+    for i, c in enumerate(out):
+        if c == "$":
+            j = next((k for k in range(i + 1, len(out)) if out[k]), None)
+            if j is not None:
+                out[j], out[i] = "$" + out[j], ""
+        elif c in {"%", ")"}:
+            j = next((k for k in range(i - 1, -1, -1) if out[k]), None)
+            if j is not None:
+                out[j], out[i] = out[j] + c, ""
+    return out
+
+
+def normalize_pdf_table(rows: list[list[str]]) -> list[list[str]]:
+    """Clean a pdfplumber table: recover columns for line-less tables, merge symbols, drop empty columns."""
+    if rows and max(len(r) for r in rows) == 1:
+        rows = [_split_numeric_row(r[0]) for r in rows]
+    width = max((len(r) for r in rows), default=0)
+    rows = [_merge_symbol_cells(r + [""] * (width - len(r))) for r in rows]
+    keep = [j for j in range(width) if any(r[j] for r in rows)]
+    return [[r[j] for j in keep] for r in rows if any(r[j] for j in keep)]
+
+
+def _looks_like_prose(rows: list[list[str]]) -> bool:
+    """Paragraph text that the PDF table finder split into cells."""
+    cells = [c for r in rows for c in r if c]
+    if not cells:
+        return True
+    fragments = sum(1 for c in cells if c[0].islower() or c[0] in ",.;:")
+    return fragments / len(cells) >= 0.3 or any(len(c) > 200 for c in cells)
+
+
 def _is_useful_table(rows: list[list[str]]) -> bool:
     cells = [c for r in rows for c in r if c]
-    return len(rows) >= 2 and len(cells) >= 4
+    if len(rows) < 2 or len(cells) < 4:
+        return False
+    numeric = sum(1 for c in cells if _NUMERIC_CELL.match(c.replace(" ", "")))
+    return numeric >= 2 and not _looks_like_prose(rows)
+
+
+_YEAR = re.compile(r"(?:19|20)\d\d")
+_LABEL_START = re.compile(r"(?i)^(years?|as of|three|six|nine|twelve|fiscal|quarter|december|june|september|march)")
+
+
+def year_header(body: str, ncols: int) -> list[str] | None:
+    """Recover a column-header row (e.g. '2023 2024') that sits just above a table, outside its detected box.
+
+    Looks at the last lines of the text above the table for a line ending in 2+ years; the years must
+    cover the value columns (ncols or ncols-1 if the first column holds the row labels).
+    """
+    lines = [l.strip() for l in body.split(chr(10)) if l.strip()][-3:]
+    for k in range(len(lines) - 1, -1, -1):
+        tokens = lines[k].split()
+        years: list[str] = []
+        while tokens and _YEAR.fullmatch(tokens[-1]):
+            years.insert(0, tokens.pop())
+        if len(years) >= 2 and ncols - len(years) in (0, 1):
+            label = " ".join(tokens).strip()
+            if not label and k > 0 and _LABEL_START.match(lines[k - 1]):
+                label = lines[k - 1]
+            return [label] * (ncols - len(years)) + years
+    return None
 
 
 def parse_docx(meta: DocMeta) -> list[Element]:
@@ -56,7 +140,7 @@ def parse_docx(meta: DocMeta) -> list[Element]:
 
     def flush():
         if para_buf:
-            elements.append(Element("text", None, "\n".join(para_buf), order=len(elements)))
+            elements.append(Element("text", None, chr(10).join(para_buf), order=len(elements)))
             para_buf.clear()
 
     for child in doc.element.body.iterchildren():
@@ -66,7 +150,6 @@ def parse_docx(meta: DocMeta) -> list[Element]:
             if t:
                 para_buf.append(t)
         elif tag == "tbl":
-            flush()
             table = Table(child, doc)
             rows = []
             for r in table.rows:
@@ -74,33 +157,50 @@ def parse_docx(meta: DocMeta) -> list[Element]:
                 if any(cells):
                     rows.append(cells)
             if _is_useful_table(rows):
+                flush()
                 elements.append(Element("table", None, rows_to_markdown(rows), rows, len(elements)))
+            else:  # layout / text-only table: keep its content as ordinary text
+                para_buf.extend(" ".join(c for c in r if c) for r in rows)
     flush()
     return elements
 
 
 def parse_pdf(meta: DocMeta) -> list[Element]:
+    """Per page: text above / between / below the accepted tables, interleaved in reading order."""
     import pdfplumber
 
     elements: list[Element] = []
+
+    def text_of(page, y0: float, y1: float) -> str:
+        if y1 - y0 < 2:
+            return ""
+        # x_tolerance=1: the default (3) glues words together in some PDFs (Amazon shareholder letter)
+        return (page.crop((0, y0, page.width, y1)).extract_text(x_tolerance=1) or "").strip()
+
     with pdfplumber.open(str(meta.path)) as pdf:
         for pno, page in enumerate(pdf.pages, start=1):
-            tables = page.find_tables()
-            table_boxes = [t.bbox for t in tables]
-
-            def outside(obj):
-                x0, top, x1, bottom = obj["x0"], obj["top"], obj["x1"], obj["bottom"]
-                return not any(x0 >= b[0] - 1 and x1 <= b[2] + 1 and top >= b[1] - 1 and bottom <= b[3] + 1
-                               for b in table_boxes)
-
-            body = page.filter(outside).extract_text() if table_boxes else page.extract_text()
-            if body and body.strip():
-                elements.append(Element("text", pno, body.strip(), order=len(elements)))
-            for t in tables:
+            accepted = []  # (top, bottom, rows)
+            for t in sorted(page.find_tables(), key=lambda t: t.bbox[1]):
                 rows = [[clean_cell(c) for c in r] for r in t.extract() if r]
-                rows = [r for r in rows if any(r)]
-                if _is_useful_table(rows):
-                    elements.append(Element("table", pno, rows_to_markdown(rows), rows, len(elements)))
+                rows = normalize_pdf_table([r for r in rows if any(r)])
+                if _is_useful_table(rows) and (not accepted or t.bbox[1] >= accepted[-1][1]):
+                    accepted.append((t.bbox[1], t.bbox[3], rows))
+
+            cursor = 0.0
+            for top, bottom, rows in accepted:
+                body = text_of(page, cursor, top)
+                if body:
+                    elements.append(Element("text", pno, body, order=len(elements)))
+                width = max(len(r) for r in rows)
+                already = any(_YEAR.fullmatch(c.strip()) for c in rows[0])
+                header = None if already else year_header(body, width)
+                if header:
+                    rows = [header] + rows
+                elements.append(Element("table", pno, rows_to_markdown(rows), rows, len(elements)))
+                cursor = bottom
+            body = text_of(page, cursor, page.height)
+            if body:
+                elements.append(Element("text", pno, body, order=len(elements)))
     return elements
 
 
