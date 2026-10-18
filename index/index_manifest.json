@@ -1,0 +1,14 @@
+{
+  "embedding_model": "text-embedding-3-small",
+  "embedding_dim": 1536,
+  "collections": {
+    "fixed": {
+      "chunks": 2035,
+      "built_at": "2026-10-18T20:28:04+00:00"
+    },
+    "semantic": {
+      "chunks": 1893,
+      "built_at": "2026-10-18T20:28:07+00:00"
+    }
+  }
+}

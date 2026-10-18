@@ -13,28 +13,11 @@ from __future__ import annotations
 from bisect import bisect_right
 
 from langchain_experimental.text_splitter import SemanticChunker
-from langchain_openai import OpenAIEmbeddings
 
 from finsight.chunking.base import Block, Chunk, count_tokens, make_prefix
 from finsight.chunking.fixed import make_splitter
-from finsight.config import DocMeta, EMBEDDING_MODEL, INDEX_DIR
-
-try:  # LangChain >= 1.0 moved these to langchain-classic
-    from langchain.embeddings import CacheBackedEmbeddings
-    from langchain.storage import LocalFileStore
-except ImportError:  # pragma: no cover
-    from langchain_classic.embeddings import CacheBackedEmbeddings
-    from langchain_classic.storage import LocalFileStore
-
-CACHE_DIR = INDEX_DIR / "embeddings_cache"
-
-
-def cached_embeddings(model: str = EMBEDDING_MODEL) -> CacheBackedEmbeddings:
-    """OpenAI embeddings with an on-disk cache keyed by text hash (committed with the index)."""
-    store = LocalFileStore(str(CACHE_DIR))
-    return CacheBackedEmbeddings.from_bytes_store(
-        OpenAIEmbeddings(model=model), store, namespace=model, key_encoder="sha256"
-    )
+from finsight.config import DocMeta
+from finsight.index.embeddings import cached_embeddings
 
 
 def make_semantic_splitter(embeddings=None, percentile: float = 95) -> SemanticChunker:

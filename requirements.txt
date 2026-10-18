@@ -19,8 +19,8 @@ langchain-chroma
 langgraph
 openai
 tiktoken
-chromadb
-bm25s
+chromadb==1.5.9  # pinned: index built locally is loaded on Replit
+bm25s==0.3.14  # pinned: saved index format
 numpy
 
 # UI

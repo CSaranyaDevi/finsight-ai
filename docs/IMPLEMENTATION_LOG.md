@@ -153,7 +153,70 @@ Fixed median fell from 497 to 418 tokens because the splitter now cuts at senten
 | 11 | 2 | Row-group label after units line | Moved to the `Table:` line | `tables.py` |
 | 12 | 2 | 30% of chunks started mid-sentence | `Block.reflowed()` joins PDF line wraps | `base.py`, `fixed.py`, `semantic.py` |
 | 13 | 2 | Embedding cache too big for git (11,776 files, 375 MB) | Git-ignored; chunk vectors committed via Chroma | `.gitignore` |
+| 14 | 3 | 15% of PDF table chunks had collapsed rows (label + values in the first cell) | Split each such row and right-align values; dates not split | `parsers.py` |
+| 15 | 3 | Rebuild skipped when ids matched but content changed | Store `embed_hash` per vector; rebuild on any mismatch | `vectorstore.py` |
+| 16 | 3 | Partial header rows put the wrong year over value columns | `line_years()` reads the whole first line; `place_years()` aligns years to numeric columns | `parsers.py` |
+| 17 | 3 | `(Note 12)` split into a value, adding a column | Keep a `)` that closes the label's bracket in the label | `parsers.py` |
+| 18 | 3 | Chroma folder doubled (orphaned segments, growing sqlite log) | `build_all()` rebuilds into an empty folder every run | `vectorstore.py`, notebook 03 |
+
+## Step 3 — Index and retrieve (2026-10-19, in progress)
+
+**Approach:** both indexes are built from the same chunks with the same chunk IDs, so hybrid fusion can merge hits on `chunk_id`. Each index reads a different view of a chunk:
+| | Chroma (dense) | bm25s (keyword) | LLM |
+|---|---|---|---|
+| Text chunk | `embed_text` (prefix + body) | `bm25_text` (same) | `text` (same) |
+| Table chunk | `embed_text` (short description) | `bm25_text` (labels and figures, no markdown) | `text` (markdown table) |
+
+Dense search matches meaning, so tables are embedded as a description; keyword search needs the exact labels and figures; the LLM needs the table structure. This is LangChain's multi-vector pattern: Chroma returns a `chunk_id`, the docstore returns the full chunk.
+
+**Code**
+| File | Status | Contents |
+|---|---|---|
+| `index/embeddings.py` | written, not run | `cached_embeddings()`: `OpenAIEmbeddings` + `CacheBackedEmbeddings` (moved here from `semantic.py`, now shared); query vectors cached too |
+| `index/vectorstore.py` | written, not run | Chroma collection per strategy (cosine), `add_texts(embed_text, metadata, ids)` in batches of 500; skips rebuild if the collection already holds the same ids; scalar metadata (`page` 0 = DOCX); docstore `chunk_id → Document(text)` built from the committed JSONL; `index_manifest.json` with model, dimension and counts, checked on load |
+| `index/bm25.py` | written, toy-tested | Tokenizer: lowercase, stopwords removed, no stemming, numbers kept whole plus comma-free form (`107,556` → `107,556`, `107556`), `$ % ( )` stripped. bm25s index saved to `index/bm25/{strategy}/` with row → chunk metadata. `BM25SRetriever` (LangChain `BaseRetriever`); filters via bm25s `weight_mask`, masked or zero-score hits dropped |
+| `retrieve/hybrid.py` | written, not run | `search(query, strategy, mode, company, fiscal_year, kind, k)`; dense = `MultiVectorRetriever` (Chroma where-filter), bm25 = `BM25SRetriever`, hybrid = `EnsembleRetriever` (RRF, weights 0.5/0.5, dedup on `chunk_id`), 30 candidates each before fusion |
+| `notebooks/03_index_and_retrieve.ipynb` | written, not run | Build both strategies' indexes; six test questions with company/year filters; dense vs BM25 vs hybrid side by side; top hit text; fixed vs semantic |
+
+**Checks before running:** imports resolve on LangChain 1.x (`EnsembleRetriever`, `MultiVectorRetriever`, `InMemoryStore` from `langchain-classic`); tokenizer output checked on sample strings; `BM25SRetriever` with and without a company/year filter tested on toy data.
+
+**Dependencies:** `bm25s` 0.3.14 installed. `bm25s` and `chromadb` pinned in `requirements.txt` because the indexes built locally are loaded on Replit.
+
+**Filters:** company and fiscal year are passed explicitly for now; extracting them from the question is the agent's `analyze_query` step (step 6).
+
+**First run of notebook 03**
+- Built: `fixed` 1,984 vectors, `semantic` 1,825; manifest `text-embedding-3-small`, 1536-dim. Sizes: `index/chroma_db/` 72 MB, `index/bm25/` 4.9 MB.
+
+| Question (filter) | Hybrid top hit | Verdict |
+|---|---|---|
+| AWS operating income 2024 (Amazon 2024) | MD&A text on operating income (p.39); segment operating income table at rank 2 | Good: the table with the AWS figure is in the top 2 |
+| Google Cloud revenue 2024 (Alphabet 2024) | Revenues-by-type table (p.37) | Right table, but its rows were broken (see fix below) |
+| Intelligent Cloud revenue FY2024 (Microsoft 2024) | Segment results text; a segment table at rank 3 | Partial: the main "Segment Results of Operations" table is not in the top 5; a case for reranking |
+| Free cash flow 2024 (Amazon 2024) | Free cash flow section text (p.40); FCF table at rank 4 | Good |
+| AI regulation risks (Alphabet 2025) | Risk Factors bullet on AI laws (EU AI Act) | Good with fixed; semantic's top hit is a less relevant risk bullet |
+| Microsoft employees (Microsoft 2025) | Human Capital Resources: ~228,000 employees as of June 30, 2025 | Good |
+
+Dense and BM25 often agree on the top hit; hybrid pulls tables up when only one retriever ranks them.
+
+**Problem: collapsed table rows.** 15% of table chunks (about 36 Alphabet, 11 Amazon) had rows where the label and all values sat in the first cell with the other columns empty (`Google Cloud 33,088 43,229 | | |`). The step 1 row split only ran when the whole table was one column. Fix in `parsers.py`: `normalize_pdf_table` now splits each such row into label + values and right-aligns the values under the value columns; dates like `June 30, 2024` are not split. Verified: the revenues-by-type table now reads `Google Cloud | 33,088 | 43,229` under `2023 | 2024`. (Microsoft hits from the same check were false positives: date sub-headers.)
+
+**Problem: stale vectors on rebuild.** `build_vectorstore` skipped rebuilding when chunk ids were unchanged, but the fix changes table content under the same ids. Fix: each vector stores an `embed_hash` of its `embed_text`; the collection is rebuilt when any hash differs. Unchanged texts come from the embedding cache, so a rebuild costs only the changed tables.
+
+**Second run (after the collapsed-row fix):** 0 collapsed rows left. Table chunks rose from 455 to 506: about 50 tables were previously rejected as "not numeric" because all their numbers sat in one cell. Totals: fixed 2,035 chunks, semantic 1,893. Google Cloud's top hit became the segment table (p.89), the revenues-by-type table (p.37) is correct at rank 3.
+
+**Problem: partial header rows (wrong years).** The segment table's header read `| | 2024 | | |` over three value columns, so `Google Cloud 26,280` (the 2022 figure) would read as 2024. The page line is `Year Ended December 31, 2022 2023 2024`, but pdfplumber's first row only covered the `2024` cell. Fixes in `parsers.py`:
+- `line_years()` reads the years across the full width of the table's first line, left to right.
+- `place_years()` puts each year over a column that actually holds numbers and drops empty spacer columns (used for both partial header rows and header lines above the table, replacing the old "years = columns or columns − 1" rule).
+- `_split_numeric_row` no longer splits `(Note 12)` into a value `12)`; that extra column had blocked the income statement header.
+
+Verified on one parse: Alphabet segment table and income statement now `2022 | 2023 | 2024`; revenues by type, Amazon free cash flow, net sales and tax tables unchanged and correct. Tables with a year header: 29–33 per Alphabet document, 19–21 per Amazon document. Remaining tables without one are mostly statements of equity, debt schedules and share tables whose columns are not years.
+
+**Third run:** header fixes confirmed in the chunks and the index (Alphabet income statement p.54 and segment table p.89 both `2022 | 2023 | 2024`); no errors. All six test questions return a relevant top hit; Google Cloud's top hit is the corrected segment table.
+
+**Problem: Chroma folder bloat.** `index/chroma_db/` grew from 72 MB to 140 MB after in-place rebuilds: 8 segment folders for 2 live collections, and `chroma.sqlite3` at 78 MB because it logs every add and delete (close to GitHub's 100 MB per-file limit). Fix: `build_all()` deletes `index/chroma_db/` and builds both collections into an empty folder every run; vectors come from the embedding cache, so this is free. Notebook 03 §1 now calls `build_all()` (restart the kernel first so no Chroma client holds the folder open).
+
+**Status at end of 2026-10-19:** the first `build_all()` run failed with a Windows `PermissionError` because the kernel had not been restarted and still held the Chroma files open; the folder was left partly deleted. Committed everything except `index/chroma_db/`. To resume: restart the kernel, Run All in notebook 03, check the folder size (expected ~70 MB, `chroma.sqlite3` well under 100 MB), then commit `index/chroma_db/` and close step 3.
 
 ## Later steps (not started)
 
-3 embeddings, Chroma and `bm25s`, hybrid retrieval · 4 gold questions and eval harness · 5 rerank · 6 LangGraph agent · 7 Streamlit UI · 8 comparison report and demo.
+4 gold questions and eval harness · 5 rerank · 6 LangGraph agent · 7 Streamlit UI · 8 comparison report and demo.
