@@ -159,7 +159,7 @@ Fixed median fell from 497 to 418 tokens because the splitter now cuts at senten
 | 17 | 3 | `(Note 12)` split into a value, adding a column | Keep a `)` that closes the label's bracket in the label | `parsers.py` |
 | 18 | 3 | Chroma folder doubled (orphaned segments, growing sqlite log) | `build_all()` rebuilds into an empty folder every run | `vectorstore.py`, notebook 03 |
 
-## Step 3 — Index and retrieve (2026-10-19, in progress)
+## Step 3 — Index and retrieve (2026-10-19, done)
 
 **Approach:** both indexes are built from the same chunks with the same chunk IDs, so hybrid fusion can merge hits on `chunk_id`. Each index reads a different view of a chunk:
 | | Chroma (dense) | bm25s (keyword) | LLM |
@@ -215,7 +215,9 @@ Verified on one parse: Alphabet segment table and income statement now `2022 | 2
 
 **Problem: Chroma folder bloat.** `index/chroma_db/` grew from 72 MB to 140 MB after in-place rebuilds: 8 segment folders for 2 live collections, and `chroma.sqlite3` at 78 MB because it logs every add and delete (close to GitHub's 100 MB per-file limit). Fix: `build_all()` deletes `index/chroma_db/` and builds both collections into an empty folder every run; vectors come from the embedding cache, so this is free. Notebook 03 §1 now calls `build_all()` (restart the kernel first so no Chroma client holds the folder open).
 
-**Status at end of 2026-10-19:** the first `build_all()` run failed with a Windows `PermissionError` because the kernel had not been restarted and still held the Chroma files open; the folder was left partly deleted. Committed everything except `index/chroma_db/`. To resume: restart the kernel, Run All in notebook 03, check the folder size (expected ~70 MB, `chroma.sqlite3` well under 100 MB), then commit `index/chroma_db/` and close step 3.
+**Final build:** after shutting down all notebook kernels, `build_all()` ran cleanly: `fixed` 2,035 and `semantic` 1,893 vectors, `index/chroma_db/` 71 MB with exactly 2 segment folders, `chroma.sqlite3` 52 MB (GitHub warns above 50 MB, blocks at 100 MB). Same top hits for the six test questions. A `PermissionError` on the first attempt came from a kernel still holding the Chroma files open; shutting down all kernels resolved it.
+
+**Carried forward:** Intelligent Cloud's main segment table is not in the top 5 (step 5, rerank); company/year filters are passed by hand (step 6, agent); the six questions are spot checks, not measurements (step 4, gold set).
 
 ## Later steps (not started)
 
