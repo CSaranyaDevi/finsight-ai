@@ -221,4 +221,14 @@ Verified on one parse: Alphabet segment table and income statement now `2022 | 2
 
 ## Later steps (not started)
 
-4 gold questions and eval harness · 5 rerank · 6 LangGraph agent · 7 Streamlit UI · 8 comparison report and demo.
+Order changed on 2026-10-19: agent and UI first, evaluation and reranking after.
+
+| Step | Work |
+|---|---|
+| 4 | LangGraph agent: analyze query (company, year), decompose comparisons, retrieve (hybrid, fixed), rerank node as a pass-through, check the context is sufficient, answer with citations or refuse |
+| 5 | Streamlit UI |
+| 6 | Gold question set and evaluation harness (scores the full pipeline, including filter extraction) |
+| 7 | Rerank (LLM-based), plugged into the existing node; before/after measurement |
+| 8 | Chunking comparison report, reranking impact analysis, demo |
+
+Until steps 6–7: refusal uses an LLM sufficiency check instead of a tuned rerank-score threshold; strategy and top-k are untested defaults (fixed chunks, hybrid).
