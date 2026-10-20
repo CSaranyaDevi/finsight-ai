@@ -94,7 +94,14 @@ def build_all(strategies: tuple[str, ...] = ("fixed", "semantic")) -> dict[str, 
     chunk text changed. Restart the kernel first if Chroma is already open in this process.
     """
     if CHROMA_DIR.exists():
-        shutil.rmtree(CHROMA_DIR)
+        try:
+            shutil.rmtree(CHROMA_DIR)
+        except PermissionError as e:
+            raise PermissionError(
+                f"{CHROMA_DIR} is open in another process (another notebook kernel, e.g. notebook 04, "
+                "or the Streamlit app). Shut down every kernel and stop Streamlit, then rerun. "
+                f"Original error: {e}"
+            ) from e
     counts = {}
     for strategy in strategies:
         store = build_vectorstore(strategy, rebuild=True)

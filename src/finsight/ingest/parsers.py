@@ -124,6 +124,35 @@ def normalize_pdf_table(rows: list[list[str]]) -> list[list[str]]:
     return _drop_empty_columns(aligned)
 
 
+def _is_value(cell: str) -> bool:
+    return bool(_NUMERIC_CELL.match(cell.replace(" ", "")))
+
+
+def normalize_docx_table(rows: list[list[str]]) -> list[list[str]]:
+    """Clean a Word table: merge '$' / ')' cells, align header labels to value columns, drop spacer columns.
+
+    Merged header cells collapse to fewer cells than the data rows, so '2025' can sit over a
+    spacer column while its values sit one column to the right. Header rows (before the first
+    row with data values) whose label count equals the number of value columns are re-placed
+    over those columns.
+    """
+    width = max((len(r) for r in rows), default=0)
+    rows = [_merge_symbol_cells(r + [""] * (width - len(r))) for r in rows]
+    data_start = next(
+        (i for i, r in enumerate(rows) if any(_is_value(c) and not _YEAR.fullmatch(c.strip()) for c in r[1:])),
+        len(rows),
+    )
+    value_cols = [j for j in range(1, width) if any(_is_value(r[j]) for r in rows[data_start:])]
+    for i in range(data_start):
+        labels = [c for c in rows[i][1:] if c]
+        if labels and len(labels) == len(value_cols):
+            header = [rows[i][0]] + [""] * (width - 1)
+            for j, label in zip(value_cols, labels):
+                header[j] = label
+            rows[i] = header
+    return _drop_empty_columns(rows)
+
+
 def _looks_like_prose(rows: list[list[str]]) -> bool:
     """Paragraph text that the PDF table finder split into cells."""
     cells = [c for r in rows for c in r if c]
@@ -208,6 +237,7 @@ def parse_docx(meta: DocMeta) -> list[Element]:
                 cells = _dedupe_row([clean_cell(c.text) for c in r.cells])
                 if any(cells):
                     rows.append(cells)
+            rows = normalize_docx_table(rows) if rows else rows
             if _is_useful_table(rows):
                 flush()
                 elements.append(Element("table", None, rows_to_markdown(rows), rows, len(elements)))

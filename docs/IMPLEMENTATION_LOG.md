@@ -158,6 +158,7 @@ Fixed median fell from 497 to 418 tokens because the splitter now cuts at senten
 | 16 | 3 | Partial header rows put the wrong year over value columns | `line_years()` reads the whole first line; `place_years()` aligns years to numeric columns | `parsers.py` |
 | 17 | 3 | `(Note 12)` split into a value, adding a column | Keep a `)` that closes the label's bracket in the label | `parsers.py` |
 | 18 | 3 | Chroma folder doubled (orphaned segments, growing sqlite log) | `build_all()` rebuilds into an empty folder every run | `vectorstore.py`, notebook 03 |
+| 19 | 6 | Microsoft FY2025 DOCX tables fragmented, header years over the wrong columns | `normalize_docx_table()`: merge `$ )`, align header labels to value columns, drop spacer columns | `parsers.py` |
 
 ## Step 3 — Index and retrieve (2026-10-19, done)
 
@@ -309,7 +310,11 @@ All decompositions, filters and brand mappings (AWS → Amazon, Google Cloud →
 
 **Cost of evaluation:** building the gold set used no API calls. Retrieval metrics need only the question embeddings (cached). A full answer run is about 3–4 chat calls per question (~20K tokens), so full runs are limited to the final configurations; answers are scored with rule checks, not an LLM judge.
 
-**Found while building:** Microsoft FY2025 DOCX tables are fragmented (`| Revenue |  | $ | 281,724 |  |  | $ | 245,122 |`, headers shifted); the DOCX path does not apply the `$` merging and empty-column cleanup used for PDFs. Figures are intact (gold set unaffected) but the tables are harder to read. To fix before the evaluation runs.
+**Found while building:** Microsoft FY2025 DOCX tables are fragmented (`| Revenue |  | $ | 281,724 |  |  | $ | 245,122 |`, headers shifted); the DOCX path does not apply the `$` merging and empty-column cleanup used for PDFs. Figures are intact (gold set unaffected) but the tables are harder to read.
+
+**Fix (DOCX tables):** cause was twofold: `$` and `)` in their own cells with empty spacer columns, and merged header cells collapsing to fewer cells than the data rows, so `2025` sat over a spacer column. `normalize_docx_table()` merges symbol cells, re-places header labels over the columns that hold values (when the label count matches), and drops empty columns. Verified on one parse: FY2025 tables wider than 6 columns fell from 58 of 63 to 15 (the rest are genuinely wide: share repurchases, dividends, stock performance, fair-value tables); `| Revenue | $281,724 | $245,122 | 15% |` under `2025 | 2024 | Percentage Change`; FY2023 and FY2024 unchanged.
+
+**Regenerated:** notebook 02 re-chunked (fixed 2,027 / semantic 1,885 chunks; 498 tables, down from 506 because cleaned Microsoft tables fit in fewer row groups). Gold evidence still matches in both sets (0 unmatched). Notebook 03's `build_all()` failed again with `PermissionError`: a second kernel (notebook 04, whose agent queries had opened Chroma) still held the files. Stopped the project's kernel processes and rebuilt from the terminal: `fixed` 2,027 and `semantic` 1,885 vectors, 71 MB, 2 segment folders, `chroma.sqlite3` 51.8 MB; manifest updated; hybrid search returns the clean FY2025 table. `build_all()` now raises a clearer error naming the likely holders (another kernel or Streamlit). Notebook 03's saved output still shows the failed run.
 
 ## Later steps (not started)
 

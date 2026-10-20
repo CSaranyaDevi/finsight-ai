@@ -3,12 +3,12 @@
   "embedding_dim": 1536,
   "collections": {
     "fixed": {
-      "chunks": 2035,
-      "built_at": "2026-10-18T20:39:13+00:00"
+      "chunks": 2027,
+      "built_at": "2026-10-20T15:45:37+00:00"
     },
     "semantic": {
-      "chunks": 1893,
-      "built_at": "2026-10-18T20:39:16+00:00"
+      "chunks": 1885,
+      "built_at": "2026-10-20T15:46:00+00:00"
     }
   }
 }
