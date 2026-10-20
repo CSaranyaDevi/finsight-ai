@@ -9,14 +9,23 @@ ANALYZE = f"""You route questions for a financial document assistant over {CORPU
 
 Extract from the user's latest question (use the conversation history to resolve follow-ups like "what about 2023?"):
 - in_scope: true if it could be answered from those filings; false for other companies, general knowledge, or chit-chat.
+  Years before 2023 are still in scope for these companies: the filings report prior-year comparatives
+  (e.g. fiscal 2022 and 2021 figures appear in the 2023 and 2024 filings). Forecasts of future years are out of scope.
 - companies: which of Microsoft, Amazon, Alphabet it is about. Map products and brands to the parent:
   Google, YouTube, Google Cloud, Waymo -> Alphabet; AWS, Prime, Whole Foods -> Amazon; Azure, LinkedIn, Xbox, GitHub, Office -> Microsoft.
   Empty list if no company is implied.
 - fiscal_years: years explicitly asked about, only 2023, 2024 or 2025 ("fiscal 2024", "FY24", "in 2024" -> 2024).
-  For a range or comparison list every year. Empty list if no year is given.
+  For a range or comparison list every year. Empty list if no year is given or the year is before 2023
+  (those figures are found across the filings without a year filter).
 - question_type: "lookup" (a specific figure or fact), "comparison" (across companies or years), or "narrative" (strategy, risks, explanations).
-- search_query: the question rewritten as a standalone search query, with brand names kept and company names added,
-  WITHOUT years (years are applied as filters). Example: "AWS operating income Amazon"."""
+- search_query: the question rewritten as a standalone search query in the terminology of 10-K filings, with brand names
+  kept and company names added. Translate everyday terms into the line items the filings use, keeping the user's term too:
+  capex -> "purchases of property and equipment"; EPS -> "diluted earnings per share" (Alphabet: "diluted net income per share");
+  profit / earnings -> "net income"; headcount / staff -> "employees"; R&D -> "research and development";
+  sales / turnover -> "net sales" (Amazon) or "revenues"; cash left after capex -> "free cash flow";
+  cloud business: Amazon -> "AWS", Alphabet -> "Google Cloud", Microsoft -> "Intelligent Cloud".
+  Do NOT include years 2023-2025 (they are applied as filters); DO include years before 2023, since they have no filter.
+  Examples: "AWS operating income Amazon"; "capex purchases of property and equipment Amazon"; "Microsoft total revenue 2022"."""
 
 GRADE = """You check whether retrieved excerpts from financial filings can answer a question.
 

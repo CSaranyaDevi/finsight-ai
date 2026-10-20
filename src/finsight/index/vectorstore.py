@@ -47,7 +47,7 @@ def to_document(c: Chunk) -> Document:
 def open_vectorstore(strategy: str, embeddings=None) -> Chroma:
     return Chroma(
         collection_name=strategy,
-        embedding_function=embeddings or cached_embeddings(),
+        embedding_function=embeddings or cached_embeddings(EMBEDDING_MODEL, EMBEDDING_DIM),
         persist_directory=str(CHROMA_DIR),
         collection_metadata={"hnsw:space": "cosine"},
     )

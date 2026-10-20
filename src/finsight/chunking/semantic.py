@@ -16,13 +16,13 @@ from langchain_experimental.text_splitter import SemanticChunker
 
 from finsight.chunking.base import Block, Chunk, count_tokens, make_prefix
 from finsight.chunking.fixed import make_splitter
-from finsight.config import DocMeta
+from finsight.config import CHUNKER_EMBEDDING_MODEL, DocMeta
 from finsight.index.embeddings import cached_embeddings
 
 
 def make_semantic_splitter(embeddings=None, percentile: float = 95) -> SemanticChunker:
     return SemanticChunker(
-        embeddings or cached_embeddings(),
+        embeddings or cached_embeddings(CHUNKER_EMBEDDING_MODEL),
         breakpoint_threshold_type="percentile",
         breakpoint_threshold_amount=percentile,
         add_start_index=True,

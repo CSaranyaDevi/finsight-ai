@@ -316,6 +316,84 @@ All decompositions, filters and brand mappings (AWS → Amazon, Google Cloud →
 
 **Regenerated:** notebook 02 re-chunked (fixed 2,027 / semantic 1,885 chunks; 498 tables, down from 506 because cleaned Microsoft tables fit in fewer row groups). Gold evidence still matches in both sets (0 unmatched). Notebook 03's `build_all()` failed again with `PermissionError`: a second kernel (notebook 04, whose agent queries had opened Chroma) still held the files. Stopped the project's kernel processes and rebuilt from the terminal: `fixed` 2,027 and `semantic` 1,885 vectors, 71 MB, 2 segment folders, `chroma.sqlite3` 51.8 MB; manifest updated; hybrid search returns the clean FY2025 table. `build_all()` now raises a clearer error naming the likely holders (another kernel or Streamlit). Notebook 03's saved output still shows the failed run.
 
+**Retrieval eval harness** (`src/finsight/evaluation/retrieval.py`, `notebooks/05_retrieval_eval.ipynb`)
+- Runs the 39 answerable gold questions through the agent's own `analyze → decompose → retrieve → rerank` steps, so it scores the real pipeline including company/year extraction. Grid: strategy (fixed / semantic) × mode (dense / BM25 / hybrid); the agent's `retrieve` node now reads a `mode` from state (default hybrid).
+- Relevance: a chunk satisfies an evidence item if it comes from one of the item's filings and contains all its strings.
+- Metrics at k = 3, 6, 12 (the agent passes 12 chunks to the answer step): hit@k, recall@k (share of evidence items found), all@k (every item found), MRR.
+- Query analysis results cached in `eval/cache/analysis.json` (keyed by question, history and model), so the grid makes 39 LLM calls once. Per-question results saved to `eval/reports/retrieval_<timestamp>.csv`.
+- Scoring checked on a toy case (wrong filing not counted; comparison needs both items for all@k).
+
+**First retrieval eval run** (39 questions, `eval/reports/retrieval_20261020_2154.csv`)
+| Strategy | Mode | hit@3 | hit@6 | hit@12 | recall@12 | all@6 | MRR |
+|---|---|---|---|---|---|---|---|
+| fixed | BM25 | 0.718 | 0.949 | 0.974 | 0.949 | 0.923 | 0.538 |
+| fixed | dense | 0.462 | 0.641 | 0.795 | 0.765 | 0.615 | 0.410 |
+| fixed | hybrid (0.5/0.5) | 0.615 | 0.769 | 0.949 | 0.927 | 0.718 | 0.491 |
+| semantic | BM25 | 0.718 | 0.923 | 0.974 | 0.949 | 0.897 | 0.574 |
+| semantic | dense | 0.436 | 0.667 | 0.744 | 0.726 | 0.615 | 0.334 |
+| semantic | hybrid (0.5/0.5) | 0.590 | 0.795 | 0.949 | 0.927 | 0.744 | 0.448 |
+
+Findings:
+- **BM25 > hybrid > dense.** With fixed chunks, 7 questions (L07, L11, L15, L18, L21, L23, C08) have evidence in BM25's top 6 but not hybrid's; none the other way round. Dense misses most table lookups: table descriptions carry labels but not figures, and MD&A text outranks them. The 50/50 fusion lets dense push good BM25 hits down.
+- **Fixed vs semantic roughly tie** (hit@12 0.949 both). Fixed ranks narrative evidence higher (hit@3 1.0 vs 0.6); semantic slightly better on comparisons at top 3.
+- **Comparisons are weakest** (all@6 0.50): with 2–3 companies or years the 12-chunk budget is split and one company's table drops out (C01, C05, C08).
+- **Query analysis** extracted the right companies and years for every question except L24 (FY2022 revenue), marked out of scope because 2022 is outside 2023–2025, although the FY2023/FY2024 filings report it as a comparative.
+- **Caveat:** gold questions mostly use the filings' own wording ("purchases of property and equipment"), which favours BM25. Paraphrased questions ("capex", "cloud sales") would favour dense; worth adding a few.
+
+Changes:
+- Analysis prompt: years before 2023 are in scope (prior-year comparatives) with no year filter; forecasts out of scope. The analysis cache key now includes the prompt, so prompt changes re-run the analysis.
+- Hybrid fusion weights configurable: `HYBRID_WEIGHTS` (default 0.5,0.5) in config, `weights` in agent state, `weights=` in `run_retrieval_eval`. Notebook 05 §5 sweeps 0.5/0.5, 0.3/0.7, 0.2/0.8 against BM25 only.
+
+**Paraphrased questions added:** 17 gold questions (`P01`–`P17`, `variant: "paraphrase"`, `paraphrase_of: <original id>`) reword existing questions in everyday terms instead of the filings' labels: capex, EPS, profit, R&D, headcount, "Google's cloud unit", "cloud and server segment", "cash left after capex", "experimental businesses". Each keeps its original's evidence rules and expected figures. Originals unchanged so earlier runs stay comparable. Gold set now 61 questions (56 with evidence); all evidence still matches in both chunk sets. Notebook 05 §3a compares the 17 paraphrases with their 17 originals by strategy and mode.
+
+**Second retrieval eval run** (56 questions incl. paraphrases; `retrieval_20261020_2224.csv` + weight sweep files). L24 now in scope.
+
+Fixed chunks, 17 paraphrases vs the same 17 originals:
+| Mode | hit@6 original | hit@6 paraphrased | hit@12 paraphrased |
+|---|---|---|---|
+| BM25 | 1.000 | 0.235 | 0.471 |
+| dense | 0.647 | 0.588 | 0.647 |
+| hybrid 0.5/0.5 | 0.765 | 0.353 | 0.588 |
+| hybrid 0.2/0.8 | 1.000 | 0.235 | 0.471 |
+
+Fixed chunks, all 39 originals: BM25 hit@6 0.949; hybrid 0.2/0.8 0.897; 0.3/0.7 0.821; 0.5/0.5 0.744; dense 0.641.
+
+Findings:
+- BM25 collapses on everyday wording (capex never matches "purchases of property and equipment", EPS never matches "diluted earnings per share"); dense barely drops but is mediocre either way.
+- Weights alone can't fix it: BM25-heavy fusion is best for filing wording, 0.5/0.5 is best for paraphrases, and none is good on paraphrases. The gap is vocabulary, not fusion.
+- L24 (FY2022) is in scope but still not retrieved: with no year filter and the year removed from the query, nothing points at the 2022 column.
+
+Fix: the analysis prompt now rewrites `search_query` in 10-K terminology, keeping the user's term (capex → purchases of property and equipment, EPS → diluted earnings per share / diluted net income per share, profit → net income, headcount → employees, R&D, cash after capex → free cash flow, each company's cloud segment name), and keeps years before 2023 in the query. Same LLM call, no extra cost. Weight default to be chosen after re-running with this.
+
+**Decision: larger embedding model for the index (`text-embedding-3-large`).** Reason: dense retrieval understands paraphrases (hit@6 dropped only 0.647 → 0.588) but ranks topical MD&A text above the table that holds the figure; a stronger embedding model should separate them better. Choices:
+- Reduced to **1536 dimensions** (`dimensions` parameter): same index size as today (~71 MB, `chroma.sqlite3` ~52 MB) while keeping most of the large model's quality; full 3072 was considered (~90–100 MB) and rejected for repo size.
+- Semantic chunk boundaries stay on `text-embedding-3-small` (`CHUNKER_EMBEDDING_MODEL`), so the fixed and semantic chunk sets are unchanged and comparable with earlier runs; only the index switches.
+- Code: `cached_embeddings(model, dimensions)` passes `dimensions` only when it differs from the model's native size and includes it in the cache namespace; the vector store uses `EMBEDDING_MODEL`/`EMBEDDING_DIM`; the manifest check catches an index built with a different model.
+- Order, for clean attribution: (1) re-run notebook 05 on the small model to measure query rewriting alone; (2) set `EMBEDDING_MODEL=text-embedding-3-large`, `EMBEDDING_DIM=1536` in `.env`, rebuild (notebook 03), re-run notebook 05 to measure the embedding upgrade. Re-index cost about 1.2M tokens.
+
+**Run A (small model + query rewriting) and run B (large model at 1536 + query rewriting)**, 56 questions; reports `retrieval_A_small_rewrite_*` and `retrieval_B_large1536_rewrite_*`. Index rebuilt with `text-embedding-3-large` at 1536 (2,027 / 1,885 vectors, still 71 MB, `chroma.sqlite3` 51.8 MB); notebook kernels stopped first so the folder could be replaced.
+
+Fixed chunks, all 56 questions:
+| Mode | hit@6 A → B | all@6 A → B | MRR A → B |
+|---|---|---|---|
+| BM25 | 0.929 → 0.929 | 0.893 → 0.893 | 0.544 → 0.544 |
+| dense | 0.696 → 0.875 | 0.661 → 0.839 | 0.438 → 0.664 |
+| hybrid 0.2/0.8 | 0.875 → 0.911 | 0.804 → 0.875 | 0.515 → 0.595 |
+| hybrid 0.3/0.7 | 0.821 → 0.911 | 0.732 → 0.875 | 0.538 → 0.664 |
+| hybrid 0.5/0.5 | 0.786 → 0.929 | 0.714 → 0.893 | 0.523 → 0.682 |
+
+Semantic chunks, run B: hybrid 0.2/0.8 hit@6 0.964, all@6 0.929, MRR 0.623; hybrid 0.5/0.5 0.946 / 0.893 / 0.631.
+Fixed, 17 paraphrases only (hit@6): BM25 0.882 (was 0.235 before rewriting); hybrid 0.5/0.5 with large 0.941.
+
+Findings:
+- Query rewriting fixed BM25 on everyday wording (paraphrase hit@6 0.235 → 0.882).
+- The large model mostly lifts dense retrieval (hit@6 0.70 → 0.88, MRR 0.44 → 0.66); BM25 is unaffected, as expected.
+- With a strong dense side, 0.5/0.5 hybrid finds as much as BM25 (hit@6 0.929) and ranks it higher (MRR 0.682 vs 0.544), and is best on paraphrases. The earlier case for BM25-heavy weights came from the weak small model.
+- One question ≈ 0.018 here; differences under ~0.04 are not meaningful. Fixed vs semantic remains close.
+- Remaining misses at top 12 (fixed, hybrid 0.2/0.8): C01 and P14, the AWS vs Google Cloud 2025 comparison.
+
+**Decision:** retrieval defaults stay **fixed chunks + hybrid 0.5/0.5** (`HYBRID_WEIGHTS=0.5,0.5`), now on the large-model index (`EMBEDDING_MODEL=text-embedding-3-large`, `EMBEDDING_DIM=1536` in `.env`). Notebooks 03 and 05 outputs predate this run (it was run from the terminal).
+
 ## Later steps (not started)
 
 Order changed on 2026-10-19: agent and UI first, evaluation and reranking after.

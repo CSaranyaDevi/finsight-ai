@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from finsight.agent import prompts
 from finsight.agent.llm import chat_model
-from finsight.config import ANALYSIS_MODEL, ANSWER_MODEL
+from finsight.config import ANALYSIS_MODEL, ANSWER_MODEL, HYBRID_WEIGHTS
 from finsight.retrieve.hybrid import search
 
 MAX_CONTEXT = 12  # chunks passed to the answer step
@@ -48,6 +48,8 @@ class AgentState(TypedDict, total=False):
     question: str
     history: list[dict]  # [{"role": "user"|"assistant", "content": str}, ...]
     strategy: str  # chunk set: "fixed" | "semantic"
+    mode: str  # retrieval: "hybrid" (default) | "dense" | "bm25"
+    weights: tuple  # hybrid fusion weights (dense, bm25); default HYBRID_WEIGHTS
     analysis: dict
     subqueries: list[dict]  # [{"query", "company", "fiscal_year"}]
     docs: list[Document]
@@ -121,7 +123,8 @@ def retrieve(state: AgentState) -> dict:
     groups = []
     for s in subs:
         query = f"{s['query']} {missing}".strip()  # on retry, search for what the grader said was missing
-        groups.append(search(query, strategy, "hybrid", company=s["company"], fiscal_year=s["fiscal_year"], k=per_sub))
+        groups.append(search(query, strategy, state.get("mode", "hybrid"), company=s["company"], fiscal_year=s["fiscal_year"],
+                             k=per_sub, weights=tuple(state.get("weights", HYBRID_WEIGHTS))))
     new_docs = _merge(groups, MAX_CONTEXT * 2)
     if state.get("attempts"):  # keep what we had, add the new hits
         new_docs = _merge([state.get("docs", []), new_docs], MAX_CONTEXT * 2)

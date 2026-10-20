@@ -15,13 +15,22 @@ except ImportError:  # pragma: no cover
 CACHE_DIR = INDEX_DIR / "embeddings_cache"
 
 
-def cached_embeddings(model: str = EMBEDDING_MODEL) -> CacheBackedEmbeddings:
+NATIVE_DIMS = {"text-embedding-3-small": 1536, "text-embedding-3-large": 3072}
+
+
+def cached_embeddings(model: str = EMBEDDING_MODEL, dimensions: int | None = None) -> CacheBackedEmbeddings:
     """Embeddings keyed by text hash, so re-running never pays twice for the same text.
 
+    `dimensions` shortens text-embedding-3 vectors (e.g. large at 1536); None or the model's native size
+    means full vectors. The cache namespace includes a non-native size so different sizes never mix.
     `query_embedding_cache=True` caches query vectors too (useful for repeated eval runs).
     """
+    if dimensions == NATIVE_DIMS.get(model):
+        dimensions = None
     store = LocalFileStore(str(CACHE_DIR))
+    kwargs = {"dimensions": dimensions} if dimensions else {}
+    namespace = f"{model}-{dimensions}" if dimensions else model
     return CacheBackedEmbeddings.from_bytes_store(
-        OpenAIEmbeddings(model=model), store, namespace=model, key_encoder="sha256",
+        OpenAIEmbeddings(model=model, **kwargs), store, namespace=namespace, key_encoder="sha256",
         query_embedding_cache=True,
     )
