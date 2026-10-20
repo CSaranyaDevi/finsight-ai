@@ -6,6 +6,7 @@ Needs OPENAI_API_KEY (from .env locally, from Secrets on Replit) and the committ
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -15,7 +16,9 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from finsight.config import ANALYSIS_MODEL, ANSWER_MODEL  # noqa: E402  (also loads .env)
+import finsight.config  # noqa: E402,F401  (loads .env)
+
+log = logging.getLogger("finsight.ui")
 
 st.set_page_config(page_title="FinSight AI", page_icon="📊", layout="wide")
 
@@ -27,18 +30,18 @@ EXAMPLES = [
     "How many employees does Microsoft have?",
 ]
 HISTORY_TURNS = 6  # previous messages passed to the agent for follow-ups
+STRATEGY = "fixed"  # final chunking strategy (chosen with the retrieval evaluation)
 
 
 @st.cache_resource(show_spinner="Loading the index…")
 def load_agent():
-    """Check the index manifest, open Chroma + bm25s for both strategies once, compile the graph."""
+    """Check the index manifest, open Chroma + bm25s once, compile the graph."""
     from finsight.agent.graph import get_agent
     from finsight.index.vectorstore import check_manifest
     from finsight.retrieve.hybrid import load_index
 
     check_manifest()
-    for strategy in ("fixed", "semantic"):
-        load_index(strategy)
+    load_index(STRATEGY)
     return get_agent()
 
 
@@ -84,11 +87,11 @@ def render_message(msg: dict) -> None:
             render_trace(msg)
 
 
-def answer(question: str, strategy: str) -> dict:
+def answer(question: str) -> dict:
     from finsight.agent.graph import ask
 
     history = [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages[-HISTORY_TURNS:]]
-    state = ask(question, history, strategy)
+    state = ask(question, history, STRATEGY)
     docs = {d.metadata["chunk_id"]: d.page_content for d in state.get("docs", [])}
     cited = {c["chunk_id"]: docs.get(c["chunk_id"], "") for c in state.get("citations", [])}
     return {
@@ -110,15 +113,14 @@ def answer(question: str, strategy: str) -> dict:
 
 with st.sidebar:
     st.title("📊 FinSight AI")
-    st.caption("Answers from annual reports and 10-K filings, with citations.")
     st.markdown(
-        "**Corpus**\n"
-        "- Microsoft · FY2023–FY2025 (year ends June 30)\n"
-        "- Amazon · 2023–2025\n"
-        "- Alphabet · 2023–2025"
+        "Ask questions about **Microsoft, Amazon and Alphabet** and get answers drawn from their "
+        "annual reports and Form 10-K filings for fiscal years 2023 to 2025.\n\n"
+        "Every figure is cited to the filing it came from, and you can open the source excerpts, "
+        "including the original tables. If the answer isn't in the filings, the assistant says so "
+        "instead of guessing.\n\n"
+        "*Note: Microsoft's fiscal year ends June 30; Amazon's and Alphabet's end December 31.*"
     )
-    strategy = st.radio("Chunking strategy", ["fixed", "semantic"], horizontal=True,
-                        help="Which chunk set to search. Tables are the same in both.")
     st.session_state.show_trace = st.toggle("Show how each answer was found", value=False)
     st.markdown("**Try asking**")
     for q in EXAMPLES:
@@ -126,7 +128,6 @@ with st.sidebar:
             st.session_state.pending = q
     if st.button("Clear chat", type="secondary"):
         st.session_state.messages = []
-    st.caption(f"Models: {ANALYSIS_MODEL} (analysis) · {ANSWER_MODEL} (answers)")
 
 # --- main ------------------------------------------------------------------
 
@@ -151,9 +152,11 @@ if question:
     with st.chat_message("assistant"):
         with st.spinner("Searching the filings…"):
             try:
-                reply = answer(question, strategy)
+                reply = answer(question)
             except Exception as e:
-                reply = {"role": "assistant", "content": f"Something went wrong: `{e}`", "citations": [], "excerpts": {}}
+                log.exception("answer failed")  # details go to the server log, not the user
+                reply = {"role": "assistant", "content": "Sorry, something went wrong while answering. Please try again.",
+                         "citations": [], "excerpts": {}}
         st.markdown(reply["content"])
         render_sources(reply)
         render_trace(reply)

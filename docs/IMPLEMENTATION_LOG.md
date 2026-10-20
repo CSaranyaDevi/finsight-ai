@@ -442,6 +442,63 @@ Improved by rerank (fixed): C01, C06, L03, L07, P01, P14; worse: none. Semantic 
 
 **Verified** in a fresh virtual environment with only `requirements-app.txt` (Python 3.13 locally; Replit uses 3.12): install clean (`pip check` OK); Streamlit `AppTest` startup 11 s with no errors; "Compare AWS and Google Cloud revenue in 2025" answered in 13 s: AWS $128,725M vs Google Cloud $58,705M, difference $70,020M, cited, with a Sources expander; committed `chroma.sqlite3` unchanged. A first attempt failed with a missing `streamlit.proto`: the scratch folder's long path hit the Windows 260-character limit; reinstalling at a short path fixed it (not a requirements problem).
 
+## Design Q&A (questions answered during the build)
+
+Short answers to questions that came up, so they don't need to be re-derived. Details are in the step sections above.
+
+### Embeddings and chunk size
+- **Vector vs dimension?** A vector is the list of numbers an embedding model returns for a text; the dimension is its length (1,536 here).
+- **Does the dimension set the chunk size?** No. Every input becomes a vector of the same length whatever its size. The hard limit on chunk size is the model's input limit (8,191 tokens), not the dimension. The handout's tip ("512-token chunk on a 384-dim model is wasted") is a quality guideline: bigger chunks need a more capable model.
+- **Can a 50K-token chunk be embedded?** Not with `text-embedding-3-*` (8,191-token limit). Even where allowed, huge chunks blur into one vague vector and retrieve badly.
+- **Why `text-embedding-3-large` at 1536 instead of full 3072?** The large model is trained so the first part of the vector holds most of the meaning (Matryoshka); shortening loses little (published MTEB roughly 64.1 at 1024 vs 64.6 at 3072, from memory) and keeps the index the same size as before. Dimension is not the bottleneck for table matching; what is embedded matters more.
+- **Chunk size finalised:** text 512 tokens with 64 overlap (median ~420 because splits land on sentence ends) plus a ~20-token prefix; tables are whole (up to ~800 tokens) or row groups with the header repeated.
+
+### Chunking strategy
+- **Which strategy was chosen?** Fixed-size. With reranking: all@6 1.000 / MRR 0.963 (fixed) vs 0.982 / 0.943 (semantic); semantic still missed C01. The difference is 1–2 questions of 56, so effectively a tie with fixed slightly ahead and cheaper. Semantic remains available in code; the UI and docs describe the fixed setup only.
+- **Does LangChain have table-aware chunking?** No built-in table splitter. Loaders (Unstructured, Docling, PyMuPDF) can emit tables as elements, and LangChain recommends the multi-vector pattern (embed a summary, return the raw table). Fixing borderless tables, year headers and units was our own work.
+- **How do LangChain's splitters skip tables?** They never see them: parsing emits tables and text as separate elements, and `iter_blocks` / `split_elements` route text blocks to the LangChain splitters and tables to `chunk_tables`.
+
+### Tables in the two indexes
+- **Is a table the same chunk in both searches?** Yes: one chunk id (or one id per row group), used by Chroma and BM25. Hybrid fusion merges hits on that id.
+- **What does each index read for a table?** Vector: a description (company, year, title, units, columns, row labels; no figures). BM25: the flattened labels and figures (`Google Cloud 43,229 58,705`). Answer model: the full markdown table.
+- **If figures aren't in the vector, how is the table retrieved?** The vector only has to find which table is relevant; Chroma returns its `chunk_id`, and `MultiVectorRetriever` swaps it for the full chunk from the docstore. A question quoting an exact figure is found through BM25.
+- **Text chunks** are embedded and BM25-indexed with the same full text (numbers in prose included).
+
+### Storage
+- **What is in `index/`?** `chroma_db/` (Chroma: vectors, descriptions, metadata), `bm25/` (bm25s score index plus our row map), `chunks/*.jsonl` (ours: all chunks, the docstore), `index_manifest.json` (ours: embedding model check), `embeddings_cache/` (LangChain cache, local only, git-ignored).
+- **How is BM25 stored?** A precomputed sparse matrix of BM25 scores, token × chunk (`data/indices/indptr.csc.index.npy`), a vocabulary (`vocab.index.json`, 17,051 tokens), parameters (`k1=1.5, b=0.75`, Lucene), and our `chunks.json` row → chunk id/metadata map. It stores no chunk text. Numbers are indexed with and without commas.
+- **Why a JSONL docstore if vector DBs store text?** Chroma stores the embedded text next to each vector, which for tables is the description, not the table. BM25 stores no text at all. One neutral store gives both indexes the same chunks, lets indexes be rebuilt without re-parsing, and is readable and diffable in git. `fixed.jsonl` holds all 2,027 chunks (1,529 text + 498 tables) with `text`, `embed_text`, `bm25_text` and metadata.
+- **What is in `chroma.sqlite3` (51.8 MB)?** Chunk metadata and descriptions (~6 MB), a recent-writes log (~7 MB), database indexes, and ~20 MB of Chroma's automatic trigram full-text index that we don't use. The vector search graphs are in the `<uuid>/data_level0.bin` files.
+- **Why did `chroma.sqlite3` change when only querying?** Chroma writes bookkeeping on open and query. Fixed: the app and evals query a per-process temporary copy (`readonly_chroma_dir()`).
+- **What do the caches do?** `eval/cache/analysis.json`: the agent's query analysis per gold question, keyed by question + history + model + prompt, so the eval grid makes those LLM calls once. `index/embeddings_cache/`: every OpenAI vector keyed by text hash and model, so rebuilds and evals never pay twice. Neither is needed to run the app.
+
+### Hybrid search
+- **Are we doing things by hand because Chroma has no hybrid search?** Partly: the separate BM25 index, rank fusion, double filtering and the shared docstore. Not the parsing, the multiple representations, the finance tokenizer, decomposition or reranking, which any database would need. Newer Chroma versions add hybrid features; not verified for the pinned 1.5.9.
+- **Production path:** a hybrid-native store (LanceDB or Qdrant local mode for embedded use; Weaviate, OpenSearch or Postgres + pgvector with a server) would replace the separate BM25 index, manual fusion and double filtering, and could hold the full table text. Not switched now: the current setup is measured and deploys simply at ~2,000 chunks.
+
+### Agent
+- **What does `gpt-4.1` do?** Step 1, query analysis (in scope, companies, fiscal years, question type, search query rewritten into filing terms; resolves follow-ups), and step 5, the evidence check (yes / partial / no, plus what's missing). Non-reasoning with `temperature=0`, for fast, consistent results.
+- **Model roles:** analysis and evidence check `gpt-4.1`; rerank `gpt-5.4-mini` (reasoning effort low); answer `gpt-5.4` (reasoning effort medium); embeddings `text-embedding-3-large` at 1536. Four LLM calls per question with reranking on.
+- **Reasoning vs non-reasoning models:** reasoning only where it pays off, in writing the answer (pick the right column and year, compare, compute). Extraction and yes/no checks don't need it; reranking is latency- and cost-sensitive.
+- **Is query decomposition needed?** For single company/year questions it is a no-op (one search). For comparisons it gives each company/year its own filtered search so one company's chunks can't crowd out the other's, and it enables the coverage guarantee. It costs no LLM call. Not measured with decomposition off; the user chose not to test it.
+- **Does retrieval guarantee both companies in a comparison?** Yes: decomposition and the round-robin merge put every company/year among the 30 candidates, and `ensure_coverage()` puts back each sub-query's top chunks if the reranker drops them (multi-part questions only).
+- **How does ranking work?** Per sub-query, dense and BM25 rankings are fused with reciprocal rank fusion (`0.5/(60+rank_dense) + 0.5/(60+rank_bm25)`); sub-query results are merged round-robin; the LLM reranker keeps 12 of 30; then the coverage guarantee is applied.
+
+### Reranking
+- **What prompt does the reranker use?** LangChain's default `LLMListwiseRerank` prompt: all candidates as `Document ID: n` blocks, then "Sort the Documents by their relevance to the Query"; the question as the user message; structured output `ranked_document_ids`. A finance-specific prompt was proposed and declined (the default already scores all@6 = 1.00).
+- **Does a custom prompt add an LLM call?** No, it would replace the text of the same call. The extra call per question is reranking itself.
+
+### Evaluation
+- **What is MRR?** Mean reciprocal rank: for each question, 1 / rank of the first relevant chunk (rank 1 → 1.0, rank 2 → 0.5, not found → 0), averaged over questions. 0.96 means the right chunk is almost always first.
+- **Tests vs evals?** Unit tests check code behaviour (pass/fail, offline); evals score system quality on the gold set. Unit tests for BM25 and the parsers were proposed but not written yet.
+- **Why paraphrased questions?** The original gold questions used the filings' own wording, which flatters BM25. Paraphrases ("capex", "EPS", "headcount") exposed the vocabulary gap that query rewriting fixed.
+
+### Configuration and deployment
+- **Why did the app work with an out-of-date `.env`?** Every setting is `os.getenv(name, default)`: missing lines fall back to the `config.py` defaults (now the final setup), and stale lines the code no longer reads (`GENERATION_MODEL`) are ignored.
+- **Was `.env` ever committed?** No: never tracked, never in history, ignored by `.gitignore`, and no `sk-` strings in any commit.
+- **Why did `localhost:8501` not open?** Streamlit wasn't running (most likely launched outside the `.venv`); the port was free. Run `.\.venv\Scripts\python -m streamlit run ui/app.py --server.port 8600`.
+- **UI for end users:** corpus list, chunking-strategy switch and model names removed; a plain description added; errors shown as a friendly message with details in the server log.
+
 ## Later steps (not started)
 
 Order changed on 2026-10-19: agent and UI first, evaluation and reranking after.
