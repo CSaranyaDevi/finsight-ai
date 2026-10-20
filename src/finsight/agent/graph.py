@@ -28,6 +28,7 @@ from finsight.retrieve.rerank import llm_rerank
 MAX_CONTEXT = 12  # chunks passed to the answer step
 MAX_SUBQUERIES = 9  # 3 companies x 3 years
 MAX_RETRIES = 1
+KEEP_PER_SUBQUERY = 2  # best chunks of each sub-query always kept in the final context
 
 Company = Literal["Microsoft", "Amazon", "Alphabet"]
 
@@ -52,6 +53,7 @@ class AgentState(TypedDict, total=False):
     mode: str  # retrieval: "hybrid" (default) | "dense" | "bm25"
     weights: tuple  # hybrid fusion weights (dense, bm25); default HYBRID_WEIGHTS
     rerank: str  # "llm" | "none"; default RERANK_BACKEND
+    protected: list[list[str]]  # per sub-query: chunk ids that must reach the answer step
     analysis: dict
     subqueries: list[dict]  # [{"query", "company", "fiscal_year"}]
     docs: list[Document]
@@ -136,16 +138,52 @@ def retrieve(state: AgentState) -> dict:
     new_docs = _merge(groups, max(budget, MAX_CONTEXT * 2))
     if state.get("attempts"):  # keep what we had, add the new hits
         new_docs = _merge([state.get("docs", []), new_docs], max(budget, MAX_CONTEXT * 2))
-    return {"docs": new_docs}
+    # Coverage guarantee for comparisons: each sub-query's top chunks must reach the answer step
+    # (only for multi-part questions; a single search has nothing to cover, so the reranker decides alone)
+    keep = KEEP_PER_SUBQUERY if len(subs) * KEEP_PER_SUBQUERY <= MAX_CONTEXT else 1
+    protected = [[d.metadata["chunk_id"] for d in g[:keep]] for g in groups] if len(subs) > 1 else []
+    if state.get("attempts"):
+        protected = state.get("protected", []) + protected
+    return {"docs": new_docs, "protected": protected}
+
+
+def ensure_coverage(ranked: list[Document], candidates: list[Document], protected: list[list[str]],
+                    limit: int = MAX_CONTEXT) -> list[Document]:
+    """Put back any protected chunk the reranker dropped, replacing the lowest-ranked unprotected chunk.
+
+    Guarantees every company/year of a comparison is represented, whatever the reranker decided.
+    Protected ids are capped upstream so they never exceed `limit`.
+    """
+    out = list(ranked[:limit])
+    by_id = {d.metadata["chunk_id"]: d for d in candidates}
+    must = [cid for group in protected for cid in group if cid in by_id]
+    must_set = set(must)
+    present = {d.metadata["chunk_id"] for d in out}
+    for cid in must:
+        if cid in present:
+            continue
+        if len(out) < limit:
+            out.append(by_id[cid])
+        else:
+            i = next((i for i in range(len(out) - 1, -1, -1) if out[i].metadata["chunk_id"] not in must_set), None)
+            if i is None:
+                break
+            present.discard(out[i].metadata["chunk_id"])
+            out[i] = by_id[cid]
+        present.add(cid)
+    return out
 
 
 def rerank(state: AgentState) -> dict:
-    """LLM listwise rerank of the candidates down to MAX_CONTEXT (or just truncate when reranking is off)."""
+    """LLM listwise rerank of the candidates down to MAX_CONTEXT (or truncate when reranking is off),
+    then make sure each sub-query's best chunks are still included."""
     docs = state["docs"]
     if _reranking(state) and len(docs) > 1:
         question = state.get("question") or state["analysis"]["search_query"]
-        return {"docs": llm_rerank(question, docs, MAX_CONTEXT)}
-    return {"docs": docs[:MAX_CONTEXT]}
+        ranked = llm_rerank(question, docs, MAX_CONTEXT)
+    else:
+        ranked = docs[:MAX_CONTEXT]
+    return {"docs": ensure_coverage(ranked, docs, state.get("protected", []))}
 
 
 def grade(state: AgentState) -> dict:

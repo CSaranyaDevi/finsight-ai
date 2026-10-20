@@ -426,6 +426,8 @@ Improved by rerank (fixed): C01, C06, L03, L07, P01, P14; worse: none. Semantic 
 
 **Caveat:** scores are near the ceiling, so this gold set no longer separates good from great configurations; further tuning needs harder questions (multi-step comparisons, rarer line items, vaguer wording).
 
+**Coverage guarantee for multi-part questions:** decomposition and round-robin merging guarantee every company/year is among the 30 candidates, but the reranker chooses the final 12 by relevance and could drop one. Added `ensure_coverage()` in the `rerank` node: `retrieve` marks each sub-query's top chunks as protected (2 each, or 1 when there are more than 6 sub-queries, so they never exceed 12), and any protected chunk the reranker left out replaces the lowest-ranked unprotected chunk. Applied only when there is more than one sub-query; single-company questions keep the reranker's order untouched. Verified offline (a reranker that drops Alphabet entirely: Alphabet's top 2 restored; 9 sub-queries: all 9 represented in the final 12; single lookup: output identical to the reranker's) and live on the 10 multi-part gold questions (fixed, hybrid, rerank): all@6 = 1.0, first relevant chunk at rank 1 for every one.
+
 **Cleanup:** removed 16 superseded eval reports (small-model runs, pre-rewriting runs and repeated sweeps; their numbers are recorded above and the files remain in git history). Kept the 5 reports for the final setup: `retrieval_B_large1536_rewrite_*` (mode and weight comparison) and `retrieval_rerank_{none,llm}_*`. Trimmed `eval/cache/analysis.json` from 151 to the 56 entries for the current prompt. Cleared stale outputs in notebooks 03 and 05 (they showed a failed build and small-model results); re-run to regenerate.
 
 ## Later steps (not started)
