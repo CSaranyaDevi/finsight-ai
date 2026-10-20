@@ -1,0 +1,11 @@
+modules = ["python-3.12"]
+run = "streamlit run ui/app.py --server.address 0.0.0.0 --server.port 8080 --server.headless true"
+
+[deployment]
+build = ["sh", "-c", "pip install -r requirements-app.txt"]
+run = ["sh", "-c", "streamlit run ui/app.py --server.address 0.0.0.0 --server.port 8080 --server.headless true"]
+deploymentTarget = "autoscale"
+
+[[ports]]
+localPort = 8080
+externalPort = 80

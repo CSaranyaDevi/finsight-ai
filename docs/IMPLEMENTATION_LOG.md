@@ -430,6 +430,18 @@ Improved by rerank (fixed): C01, C06, L03, L07, P01, P14; worse: none. Semantic 
 
 **Cleanup:** removed 16 superseded eval reports (small-model runs, pre-rewriting runs and repeated sweeps; their numbers are recorded above and the files remain in git history). Kept the 5 reports for the final setup: `retrieval_B_large1536_rewrite_*` (mode and weight comparison) and `retrieval_rerank_{none,llm}_*`. Trimmed `eval/cache/analysis.json` from 151 to the 56 entries for the current prompt. Cleared stale outputs in notebooks 03 and 05 (they showed a failed build and small-model results); re-run to regenerate.
 
+## Deployment preparation (2026-10-20)
+
+| Change | Why |
+|---|---|
+| Code defaults set to the final setup (`text-embedding-3-large` at 1536, `gpt-5.4-mini` rerank, `gpt-4.1` analysis, `gpt-5.4` answers) | A host without `.env` (Replit) needs only `OPENAI_API_KEY`; the old default (`text-embedding-3-small`) would have failed the index manifest check |
+| Queries open a per-process temporary copy of `index/chroma_db/` (`readonly_chroma_dir()`) | Chroma writes bookkeeping into `chroma.sqlite3` even when only queried; the committed index now stays byte-identical (no git churn, no file locks between app, notebooks and builds). Builds still write to the real folder |
+| `requirements-app.txt`: 14 pinned runtime packages | The full `requirements.txt` includes parsers, notebooks and evaluation tooling |
+| `.replit`: Python 3.12, Streamlit on 0.0.0.0:8080, autoscale deployment building from `requirements-app.txt` | Replit run and deploy configuration |
+| README: Replit steps | Import from GitHub, add the secret, run or deploy |
+
+**Verified** in a fresh virtual environment with only `requirements-app.txt` (Python 3.13 locally; Replit uses 3.12): install clean (`pip check` OK); Streamlit `AppTest` startup 11 s with no errors; "Compare AWS and Google Cloud revenue in 2025" answered in 13 s: AWS $128,725M vs Google Cloud $58,705M, difference $70,020M, cited, with a Sources expander; committed `chroma.sqlite3` unchanged. A first attempt failed with a missing `streamlit.proto`: the scratch folder's long path hit the Windows 260-character limit; reinstalling at a short path fixed it (not a requirements problem).
+
 ## Later steps (not started)
 
 Order changed on 2026-10-19: agent and UI first, evaluation and reranking after.

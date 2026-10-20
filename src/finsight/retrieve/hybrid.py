@@ -12,7 +12,7 @@ from functools import lru_cache
 from langchain_core.documents import Document
 
 from finsight.index.bm25 import BM25SRetriever, load_bm25
-from finsight.index.vectorstore import load_docstore, open_vectorstore
+from finsight.index.vectorstore import load_docstore, open_readonly_vectorstore
 
 try:  # LangChain >= 1.0 moved these to langchain-classic
     from langchain.retrievers import EnsembleRetriever, MultiVectorRetriever
@@ -36,12 +36,12 @@ class RetrievalIndex:
 
 @lru_cache(maxsize=4)
 def load_index(strategy: str) -> RetrievalIndex:
-    """Open Chroma + bm25s + docstore for a strategy (cached; read-only)."""
+    """Open Chroma (a temporary copy) + bm25s + docstore for a strategy (cached; read-only)."""
     docstore = load_docstore(strategy)
     mem = InMemoryStore()
     mem.mset(list(docstore.items()))
     model, meta = load_bm25(strategy)
-    return RetrievalIndex(strategy, open_vectorstore(strategy), docstore, mem, model, meta)
+    return RetrievalIndex(strategy, open_readonly_vectorstore(strategy), docstore, mem, model, meta)
 
 
 def chroma_filter(flt: dict | None) -> dict | None:

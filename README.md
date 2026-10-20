@@ -21,6 +21,15 @@ streamlit run ui/app.py
 
 Opens at http://localhost:8501. Uses the committed `index/` and `OPENAI_API_KEY` from `.env`.
 
+## Deploy on Replit
+
+1. In Replit: **Create Repl → Import from GitHub** → this repository.
+2. **Secrets** (padlock icon): add `OPENAI_API_KEY`. Nothing else is needed; the code defaults are the final, evaluated setup.
+3. Click **Run**. `.replit` starts Streamlit on port 8080; the Webview shows the app (first start installs `requirements-app.txt`, a few minutes).
+4. For a public URL: **Deploy → Autoscale** (build and run commands come from `.replit`).
+
+The app serves the committed `index/` (Chroma, BM25, chunks); it never re-embeds the filings and doesn't need `DataSource/`.
+
 ## Run step by step
 
 | Step | Notebook / code | Status |

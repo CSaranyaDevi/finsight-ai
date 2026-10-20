@@ -9,7 +9,10 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import tempfile
 from datetime import datetime, timezone
+from functools import lru_cache
+from pathlib import Path
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
@@ -44,13 +47,29 @@ def to_document(c: Chunk) -> Document:
     return Document(page_content=c.text, metadata=chunk_metadata(c), id=c.chunk_id)
 
 
-def open_vectorstore(strategy: str, embeddings=None) -> Chroma:
+def open_vectorstore(strategy: str, embeddings=None, persist_dir=None) -> Chroma:
     return Chroma(
         collection_name=strategy,
         embedding_function=embeddings or cached_embeddings(EMBEDDING_MODEL, EMBEDDING_DIM),
-        persist_directory=str(CHROMA_DIR),
+        persist_directory=str(persist_dir or CHROMA_DIR),
         collection_metadata={"hnsw:space": "cosine"},
     )
+
+
+@lru_cache(maxsize=1)
+def readonly_chroma_dir() -> Path:
+    """A per-process temporary copy of index/chroma_db/ for querying.
+
+    Chroma writes bookkeeping into chroma.sqlite3 even when only queried; querying a copy keeps the
+    committed index byte-identical (no git churn) and avoids file locks between the app, notebooks and builds.
+    """
+    tmp = Path(tempfile.mkdtemp(prefix="finsight_chroma_"))
+    shutil.copytree(CHROMA_DIR, tmp / "chroma_db")
+    return tmp / "chroma_db"
+
+
+def open_readonly_vectorstore(strategy: str) -> Chroma:
+    return open_vectorstore(strategy, persist_dir=readonly_chroma_dir())
 
 
 def _embed_hash(c: Chunk) -> str:
