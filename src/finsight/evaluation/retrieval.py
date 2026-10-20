@@ -87,24 +87,26 @@ def analyze_all(gold: list[dict], refresh: bool = False) -> dict[str, dict]:
 
 # --- retrieval grid --------------------------------------------------------
 
-def retrieve_for(analysis: dict, strategy: str, mode: str, weights=None) -> list[Document]:
-    """The agent's decompose + retrieve + rerank (pass-through) steps for one configuration."""
-    from finsight.agent.graph import decompose, rerank, retrieve
+def retrieve_for(analysis: dict, strategy: str, mode: str, weights=None, rerank: str = "none", question: str = "") -> list[Document]:
+    """The agent's decompose + retrieve + rerank steps for one configuration (rerank "none" | "llm")."""
+    from finsight.agent.graph import decompose, retrieve
+    from finsight.agent.graph import rerank as rerank_node
 
-    state = {"analysis": analysis, "strategy": strategy, "mode": mode, "attempts": 0}
+    state = {"analysis": analysis, "strategy": strategy, "mode": mode, "attempts": 0, "rerank": rerank, "question": question}
     if weights:
         state["weights"] = weights
     state.update(decompose(state))
     state.update(retrieve(state))
-    return rerank(state)["docs"]
+    return rerank_node(state)["docs"]
 
 
 def run_retrieval_eval(
-    strategies=STRATEGIES, modes=MODES, gold: list[dict] | None = None, save: bool = True, weights=None, tag: str = ""
+    strategies=STRATEGIES, modes=MODES, gold: list[dict] | None = None, save: bool = True, weights=None, tag: str = "", rerank: str = "none"
 ) -> pd.DataFrame:
     """One row per (question, strategy, mode). Refusal questions are skipped (no evidence).
 
     `weights` (dense, bm25) overrides HYBRID_WEIGHTS for hybrid mode; `tag` labels the run in the report file.
+    `rerank="llm"` adds the LLM reranker (one LLM call per question and configuration).
     """
     gold = [g for g in (gold or load_gold()) if g.get("evidence")]
     analyses = analyze_all(gold)
@@ -113,10 +115,10 @@ def run_retrieval_eval(
         for mode in modes:
             for g in gold:
                 a = analyses[g["id"]]
-                docs = retrieve_for(a, strategy, mode, weights) if a["in_scope"] else []
+                docs = retrieve_for(a, strategy, mode, weights, rerank, g["question"]) if a["in_scope"] else []
                 rows.append({
                     "id": g["id"], "type": g["type"], "variant": g.get("variant", "original"),
-                    "paraphrase_of": g.get("paraphrase_of", ""), "strategy": strategy, "mode": mode,
+                    "paraphrase_of": g.get("paraphrase_of", ""), "strategy": strategy, "mode": mode, "rerank": rerank,
                     "weights": ",".join(map(str, weights)) if (weights and mode == "hybrid") else "",
                     "in_scope": a["in_scope"], "companies": ",".join(a["companies"]),
                     "years": ",".join(map(str, a["fiscal_years"])), "n_evidence": len(g["evidence"]),

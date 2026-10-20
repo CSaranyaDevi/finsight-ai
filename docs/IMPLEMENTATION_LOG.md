@@ -394,6 +394,38 @@ Findings:
 
 **Decision:** retrieval defaults stay **fixed chunks + hybrid 0.5/0.5** (`HYBRID_WEIGHTS=0.5,0.5`), now on the large-model index (`EMBEDDING_MODEL=text-embedding-3-large`, `EMBEDDING_DIM=1536` in `.env`). Notebooks 03 and 05 outputs predate this run (it was run from the terminal).
 
+## Step 7 — Reranking (2026-10-20, done)
+
+**Code**
+| File | Contents |
+|---|---|
+| `retrieve/rerank.py` | `llm_rerank(question, docs, top_n)`: LangChain `LLMListwiseRerank` with `RERANK_MODEL` (`.env`: `gpt-5.4-mini`, reasoning effort low). The model reads the question with all candidates (full chunk text, so tables as markdown, not their descriptions) and returns them in relevance order. Falls back to retrieval order on any error; tops up if fewer than `top_n` come back |
+| `agent/graph.py` | `rerank` node: LLM rerank down to 12 when `RERANK_BACKEND=llm`, else plain truncation. With reranking on, `retrieve` fetches `RERANK_CANDIDATES` (30) instead of 12. State keys `rerank`, `question` |
+| `config.py` | `RERANK_BACKEND` (default `llm`), `RERANK_CANDIDATES` (30) |
+| `evaluation/retrieval.py` | `rerank="none" | "llm"` option, recorded per row |
+| notebook 05 §6 | Rerank off vs on (hybrid 0.5/0.5, both strategies), by question type, and which questions changed |
+
+**Bug caught before running:** in `retrieve_for`, the `rerank` parameter was shadowed by importing the agent's `rerank` function under the same name, so the reranker would never have switched on. Renamed the import; verified offline with stubbed search and reranker (off: 12 candidates, no rerank call; llm: 30 candidates → reranker → 12).
+
+**First live check (C01, AWS vs Google Cloud revenue 2025, the remaining miss):** without rerank, all@6 0 (top 2: Amazon letter text and an Alphabet table); with rerank, all@6 1, first relevant chunk at rank 1, top 2 the Amazon net sales table and the Alphabet revenue table. 3.3 s per question vs 0.3 s.
+
+**Note:** reranking is now on by default for the agent and the UI, which adds ~3 s and one `RERANK_MODEL` call per question.
+
+**Rerank impact** (hybrid 0.5/0.5, 56 questions; reports `retrieval_rerank_none_*`, `retrieval_rerank_llm_*`; run from the terminal, 112 rerank calls in 260 s, ~2.3 s each)
+| Strategy | Rerank | hit@3 | hit@6 | all@6 | MRR |
+|---|---|---|---|---|---|
+| fixed | off | 0.804 | 0.929 | 0.893 | 0.682 |
+| fixed | on | 0.982 | 1.000 | 1.000 | 0.963 |
+| semantic | off | 0.768 | 0.946 | 0.893 | 0.631 |
+| semantic | on | 1.000 | 1.000 | 0.982 | 0.943 |
+
+Fixed chunks by type (all@6 off → on): comparison 0.70 → 1.00, lookup 0.92 → 1.00; narrative and follow-up already 1.00, MRR rose to 1.00.
+Improved by rerank (fixed): C01, C06, L03, L07, P01, P14; worse: none. Semantic with rerank still misses C01 at top 12.
+
+**Decision (final retrieval setup):** fixed chunks, hybrid 0.5/0.5, `text-embedding-3-large` at 1536, LLM rerank of 30 candidates to 12 (`gpt-5.4-mini`). Already the default for the agent and the UI.
+
+**Caveat:** scores are near the ceiling, so this gold set no longer separates good from great configurations; further tuning needs harder questions (multi-step comparisons, rarer line items, vaguer wording).
+
 ## Later steps (not started)
 
 Order changed on 2026-10-19: agent and UI first, evaluation and reranking after.

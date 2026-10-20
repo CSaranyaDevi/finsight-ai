@@ -6,7 +6,7 @@
                               ^                    |
                               +----(no, 1 retry)---+--(no, retried)--> refuse -> END
 
-`rerank` is a pass-through until step 7 plugs in the LLM reranker.
+`rerank` is an LLM listwise reranker (RERANK_BACKEND=llm) or a plain truncation (none).
 """
 from __future__ import annotations
 
@@ -21,8 +21,9 @@ from pydantic import BaseModel, Field
 
 from finsight.agent import prompts
 from finsight.agent.llm import chat_model
-from finsight.config import ANALYSIS_MODEL, ANSWER_MODEL, HYBRID_WEIGHTS
+from finsight.config import ANALYSIS_MODEL, ANSWER_MODEL, HYBRID_WEIGHTS, RERANK_BACKEND, RERANK_CANDIDATES
 from finsight.retrieve.hybrid import search
+from finsight.retrieve.rerank import llm_rerank
 
 MAX_CONTEXT = 12  # chunks passed to the answer step
 MAX_SUBQUERIES = 9  # 3 companies x 3 years
@@ -50,6 +51,7 @@ class AgentState(TypedDict, total=False):
     strategy: str  # chunk set: "fixed" | "semantic"
     mode: str  # retrieval: "hybrid" (default) | "dense" | "bm25"
     weights: tuple  # hybrid fusion weights (dense, bm25); default HYBRID_WEIGHTS
+    rerank: str  # "llm" | "none"; default RERANK_BACKEND
     analysis: dict
     subqueries: list[dict]  # [{"query", "company", "fiscal_year"}]
     docs: list[Document]
@@ -115,25 +117,35 @@ def decompose(state: AgentState) -> dict:
     return {"subqueries": subqueries}
 
 
+def _reranking(state: AgentState) -> bool:
+    return state.get("rerank", RERANK_BACKEND) == "llm"
+
+
 def retrieve(state: AgentState) -> dict:
+    """Hybrid search per sub-query. With reranking on, fetch RERANK_CANDIDATES for the reranker to narrow down."""
     strategy = state.get("strategy", "fixed")
     subs = state["subqueries"]
-    per_sub = max(3, MAX_CONTEXT // len(subs))
+    budget = RERANK_CANDIDATES if _reranking(state) else MAX_CONTEXT
+    per_sub = max(3, budget // len(subs))
     missing = state.get("grade", {}).get("missing", "") if state.get("attempts") else ""
     groups = []
     for s in subs:
         query = f"{s['query']} {missing}".strip()  # on retry, search for what the grader said was missing
         groups.append(search(query, strategy, state.get("mode", "hybrid"), company=s["company"], fiscal_year=s["fiscal_year"],
                              k=per_sub, weights=tuple(state.get("weights", HYBRID_WEIGHTS))))
-    new_docs = _merge(groups, MAX_CONTEXT * 2)
+    new_docs = _merge(groups, max(budget, MAX_CONTEXT * 2))
     if state.get("attempts"):  # keep what we had, add the new hits
-        new_docs = _merge([state.get("docs", []), new_docs], MAX_CONTEXT * 2)
+        new_docs = _merge([state.get("docs", []), new_docs], max(budget, MAX_CONTEXT * 2))
     return {"docs": new_docs}
 
 
 def rerank(state: AgentState) -> dict:
-    """Pass-through for now (step 7 replaces this with an LLM reranker)."""
-    return {"docs": state["docs"][:MAX_CONTEXT]}
+    """LLM listwise rerank of the candidates down to MAX_CONTEXT (or just truncate when reranking is off)."""
+    docs = state["docs"]
+    if _reranking(state) and len(docs) > 1:
+        question = state.get("question") or state["analysis"]["search_query"]
+        return {"docs": llm_rerank(question, docs, MAX_CONTEXT)}
+    return {"docs": docs[:MAX_CONTEXT]}
 
 
 def grade(state: AgentState) -> dict:
