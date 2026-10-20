@@ -219,6 +219,62 @@ Verified on one parse: Alphabet segment table and income statement now `2022 | 2
 
 **Carried forward:** Intelligent Cloud's main segment table is not in the top 5 (step 5, rerank); company/year filters are passed by hand (step 6, agent); the six questions are spot checks, not measurements (step 4, gold set).
 
+## Step 4 — LangGraph agent (2026-10-20, done)
+
+**Model choice** (discussed before building)
+| Role | Model | Reason |
+|---|---|---|
+| Query analysis + context check | `gpt-4.1` (`ANALYSIS_MODEL`) | Non-reasoning, fast, `temperature=0` for consistent extraction and yes/no judgments |
+| Answer | `gpt-5.4`, reasoning effort medium (`ANSWER_MODEL`) | Reading the right table column and year, comparing and computing changes benefit from reasoning; the prompt also makes it quote input figures before any calculation |
+| Rerank (step 7) | `gpt-4.1-mini` default (`RERANK_MODEL`) | Runs on ~30 chunks per question, so speed and cost matter |
+| Embeddings | `text-embedding-3-small` | Unchanged; the index was built with it |
+
+Considered: `gpt-4o-mini` (cheapest), `gpt-5.4` (reasoning; checked available on the account via the models list), a split with `gpt-5.4` for answers only. Chosen: `gpt-4.1` for analysis and the context check, `gpt-5.4` for answers; the step 6 evaluation can compare answer models. `GENERATION_MODEL` replaced by `ANALYSIS_MODEL` / `ANSWER_MODEL` / `RERANK_MODEL`. `llm.chat_model()` sends `temperature=0` to non-reasoning models and `reasoning_effort` to reasoning models (`gpt-5*`, `o*`), so any model can be swapped in `.env`.
+
+**Graph** (`agent/graph.py`, LangGraph `StateGraph`)
+```
+START -> analyze --(out of scope)--> refuse -> END
+            |
+         decompose -> retrieve -> rerank -> grade --(yes/partial)--> answer -> END
+                          ^                   |
+                          +---(no, 1 retry)---+--(no, retried)--> refuse -> END
+```
+| Node | What it does |
+|---|---|
+| `analyze` | Structured output (`QueryAnalysis`): in_scope, companies (brands mapped to parent: AWS → Amazon, Google Cloud → Alphabet), fiscal years 2023–2025, question type, standalone search query without years. Uses chat history for follow-ups |
+| `decompose` | One sub-query per (company, year), up to 9; no filter on an axis the question doesn't specify |
+| `retrieve` | Hybrid search (fixed chunks) per sub-query, merged round-robin so each company/year is represented, deduplicated on `chunk_id`. On retry, adds the grader's "missing" text to the query and keeps earlier hits |
+| `rerank` | Pass-through, keeps the top 12 (step 7 plugs in the LLM reranker here) |
+| `grade` | Structured output (`Grade`): answerable yes / partial / no, plus what is missing |
+| `answer` | Numbered excerpts with source labels; rules: excerpts only, cite every figure `[n]`, match table values to column years, quote inputs before calculating, Microsoft fiscal year ends June 30, state what is missing for partial answers. Citations parsed from the `[n]` markers |
+| `refuse` | Out of scope, or not found after one retry; fixed messages, no LLM call |
+
+`ask(question, history, strategy)` returns the final state: answer, citations, route (`answered` / `not_found` / `out_of_scope`) and the trace (analysis, sub-queries, docs, grade).
+
+**Checks before running:** graph compiles (Mermaid diagram printed); `decompose` and `after_grade` routing tested without API calls; reasoning-model detection tested.
+
+**Notebook 04:** single lookups, comparisons (decomposed), narrative, three refusal cases (other company, year outside the corpus, fact not in filings), a follow-up using chat history, and the context of one answer.
+
+**First run of notebook 04** (answers checked against the filings)
+| # | Question | Result | Verdict |
+|---|---|---|---|
+| 1 | AWS operating income 2024 | $39,834M, segment table cited | Correct |
+| 2 | Google Cloud revenue 2024 | $43,229M, two tables agree | Correct |
+| 3 | Microsoft employees | ~228,000 as of June 30, 2025 (plus FY2023–24) | Correct |
+| 4 | AWS vs Google Cloud revenue 2024 | $107,556M vs $43,229M, difference $64,327M with calculation shown | Correct |
+| 5 | Intelligent Cloud FY2023 → FY2024 | +$17.5B (+20%); says absolute totals not in excerpts | Correct but incomplete: segment table (105,362 vs 87,907) not retrieved; rerank (step 7) |
+| 6 | Alphabet AI-regulation risks (2025) | Structured, cited summary | Good |
+| 7 | Apple revenue 2024 | Refused, out of scope | Correct |
+| 8 | Amazon revenue 2019 | Refused, routed as out of scope | Outcome correct; "not in the filings" would be the more precise label |
+| 9 | AWS CEO's dog | Refused | Correct |
+| 10 | Follow-up "And what was it in 2023?" | Resolved to Google Cloud 2023: $33,088M | Value correct; added a stray remark about the previous turn's year |
+
+All decompositions, filters and brand mappings (AWS → Amazon, Google Cloud → Alphabet) were right; every answer graded "yes" on the first attempt.
+
+**Fixes:** answer prompt rules 8–9: answer only the latest question (history is for resolving references, not for commentary), and no closing offers ("If you want, I can…").
+
+**Open:** context noise (about half of the 12 excerpts loosely related, e.g. shareholder-letter paragraphs) and the Intelligent Cloud table miss are for step 7 (rerank).
+
 ## Later steps (not started)
 
 Order changed on 2026-10-19: agent and UI first, evaluation and reranking after.

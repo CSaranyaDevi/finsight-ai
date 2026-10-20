@@ -20,7 +20,10 @@ INDEX_DIR = _path("INDEX_DIR", "index")
 
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1536"))
-GENERATION_MODEL = os.getenv("GENERATION_MODEL", "gpt-4o-mini")
+# Chat models per role (any OpenAI chat model; reasoning models get reasoning_effort instead of temperature)
+ANALYSIS_MODEL = os.getenv("ANALYSIS_MODEL", "gpt-4.1")  # query analysis + context check
+ANSWER_MODEL = os.getenv("ANSWER_MODEL", "gpt-5.4")  # final answer (reasoning model, effort "medium")
+RERANK_MODEL = os.getenv("RERANK_MODEL", "gpt-4.1-mini")  # reranking (step 7)
 
 # Microsoft's fiscal year ends June 30; Amazon and Alphabet end Dec 31.
 FISCAL_YEAR_END = {"Microsoft": "June 30", "Amazon": "December 31", "Alphabet": "December 31"}
