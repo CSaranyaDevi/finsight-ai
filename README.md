@@ -13,6 +13,14 @@ copy .env.example .env      # then set OPENAI_API_KEY
 python -m ipykernel install --user --name finsight --display-name "finsight (.venv)"
 ```
 
+## Run the chat UI
+
+```powershell
+streamlit run ui/app.py
+```
+
+Opens at http://localhost:8501. Uses the committed `index/` and `OPENAI_API_KEY` from `.env`.
+
 ## Run step by step
 
 | Step | Notebook / code | Status |
@@ -23,6 +31,6 @@ python -m ipykernel install --user --name finsight --display-name "finsight (.ve
 | 4. Gold questions + eval harness | `eval/` | todo |
 | 5. Rerank | `src/finsight/retrieve/` | todo |
 | 6. LangGraph agent | `src/finsight/agent/` | todo |
-| 7. Streamlit UI | `ui/app.py` | todo |
+| 7. Streamlit UI | `ui/app.py` | done |
 
 Select the **finsight (.venv)** kernel in VS Code when opening a notebook. Embeddings and indexes are committed under `index/`.

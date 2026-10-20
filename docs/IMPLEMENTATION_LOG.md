@@ -275,6 +275,42 @@ All decompositions, filters and brand mappings (AWS → Amazon, Google Cloud →
 
 **Open:** context noise (about half of the 12 excerpts loosely related, e.g. shareholder-letter paragraphs) and the Intelligent Cloud table miss are for step 7 (rerank).
 
+## Step 5 — Streamlit UI (2026-10-20, in progress)
+
+**Code:** `ui/app.py` (Streamlit 1.66, installed in `.venv`; already in `requirements.txt`). Run with `streamlit run ui/app.py`.
+
+| Part | Behaviour |
+|---|---|
+| Startup | `st.cache_resource` checks the index manifest, opens Chroma + bm25s for both strategies once, compiles the agent; clear error if `OPENAI_API_KEY` or the index is missing |
+| Chat | `st.chat_input`; each question calls `ask(question, history, strategy)` with the last 6 messages for follow-ups |
+| Answer | Markdown answer, then a **Sources** expander: each citation `[n]` with its label (company, doc, fiscal year, section, page) and the excerpt the model saw (tables render as markdown tables) |
+| Trace (toggle) | Route, extracted companies/years/type, search query, sub-queries, excerpts retrieved, context-check verdict |
+| Sidebar | Corpus and fiscal-year note, chunking strategy (fixed / semantic), five example questions, clear chat, model names |
+
+**Checks:** headless smoke test with Streamlit `AppTest` (renders the page and loads the index, no questions asked, no LLM calls): no exceptions or errors; sidebar, strategy radio, 6 buttons and chat input present.
+
+**Note:** querying Chroma modifies `index/chroma_db/chroma.sqlite3` on disk even without writes; left uncommitted, to resolve before deployment.
+
+## Step 6 — Gold set and evaluation (2026-10-20, in progress)
+
+**Gold set:** `eval/gold_questions.jsonl`, 44 questions. Answers were taken from the parsed filings (table rows printed from `index/chunks/fixed.jsonl`), not from memory.
+
+| Type | Count | What it tests |
+|---|---|---|
+| lookup | 24 | One figure from one company and year: segment and total revenue, operating and net income, EPS, free cash flow, capex, R&D, employees; includes a FY2022 comparative (Microsoft revenue) that only appears in later filings |
+| comparison | 8 | Across companies (AWS vs Google Cloud; net income of all three) or years (operating income, R&D, Intelligent Cloud); one growth-rate question |
+| narrative | 5 | Explanations and definitions: AWS operating income drivers, AI-regulation risks, Intelligent Cloud growth drivers, free cash flow definition, Other Bets |
+| followup | 2 | Chat history needed to resolve the question |
+| refusal | 5 | Other companies, a year outside the filings, a forecast, a fact not in the filings |
+
+**Record format:** `id`, `type`, `question`, optional `history`, `answer` (human-readable expected answer), `figures` (strings the answer must contain), `keywords` (narrative), `expect_refusal`, and `evidence`: a list of `{docs, contains}` rules. A chunk is relevant to an evidence item if it belongs to one of `docs` and contains every string in `contains`. Rules instead of chunk ids keep the gold set valid for both chunking strategies and across re-chunking.
+
+**Verification:** every evidence item matches at least one chunk in both the fixed and semantic chunk sets (0 unmatched).
+
+**Cost of evaluation:** building the gold set used no API calls. Retrieval metrics need only the question embeddings (cached). A full answer run is about 3–4 chat calls per question (~20K tokens), so full runs are limited to the final configurations; answers are scored with rule checks, not an LLM judge.
+
+**Found while building:** Microsoft FY2025 DOCX tables are fragmented (`| Revenue |  | $ | 281,724 |  |  | $ | 245,122 |`, headers shifted); the DOCX path does not apply the `$` merging and empty-column cleanup used for PDFs. Figures are intact (gold set unaffected) but the tables are harder to read. To fix before the evaluation runs.
+
 ## Later steps (not started)
 
 Order changed on 2026-10-19: agent and UI first, evaluation and reranking after.
